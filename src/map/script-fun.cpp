@@ -45,6 +45,7 @@
 #include "chrif.hpp"
 #include "clif.hpp"
 #include "globals.hpp"
+#include "guild.hpp"
 #include "intif.hpp"
 #include "itemdb.hpp"
 #include "magic-interpreter-base.hpp"
@@ -3127,6 +3128,19 @@ void builtin_mapexit(ScriptState *)
     runflag = 0;
 }
 
+/*============================
+ * Create guild
+ *----------------------------
+ */
+static
+void builtin_createguild(ScriptState *st)
+{
+    dumb_ptr<map_session_data> sd = script_rid2sd(st);
+    GuildName guild_name = stringish<GuildName>(VString<23>(conv_str(st, &AARG(0))));
+
+    guild_create(sd, guild_name);
+}
+
 
 #define BUILTIN(func, args, ret)    \
 {builtin_##func, #func ## _s, args, ret}
@@ -3257,6 +3271,7 @@ BuiltinFunction builtin_functions[] =
     BUILTIN(getmap, ""_s, 's'),
     BUILTIN(mapexit, ""_s, '\0'),
     BUILTIN(freeloop, "i"_s, '\0'),
+    BUILTIN(createguild, "s"_s, '\0'),
     {nullptr, ""_s, ""_s, '\0'},
 };
 } // namespace map

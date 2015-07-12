@@ -44,6 +44,7 @@
 #include "globals.hpp"
 #include "map.hpp"
 #include "party.hpp"
+#include "guild.hpp"
 #include "pc.hpp"
 #include "storage.hpp"
 
@@ -527,6 +528,171 @@ void intif_parse_PartyMessage(Session *, const Packet_Head<0x3827>& head, AStrin
     party_recv_message(head.party_id, head.account_id, buf);
 }
 
+/*========================================
+ *  Send guild create request to char server.
+ *----------------------------------------
+ */
+void intif_guild_create(dumb_ptr<map_session_data> sd, GuildName guild_name)
+{
+    Packet_Fixed<0x3030> fixed_30;
+    fixed_30.account_id = sd->status_key.account_id;
+    fixed_30.guild_name = guild_name;
+    fixed_30.char_name = sd->status_key.name;
+    //fixed_30.map_name = sd->bl_m->name_; // maybe in the future
+    fixed_30.level = sd->status.base_level;
+    send_fpacket<0x3030, 56>(char_session, fixed_30);
+}
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+void intif_request_guildinfo(GuildId guild_id, AccountId account_id)
+{
+    if (!char_session)
+        return;
+
+    Packet_Fixed<0x3031> fixed_31;
+    fixed_31.guild_id = guild_id;
+    fixed_31.account_id = account_id;
+    send_fpacket<0x3031, 10>(char_session, fixed_31);
+}
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+void intif_guild_addmember (GuildId guild_invite, AccountId id, int i, int lv, CharName name)
+{
+    if (!char_session)
+    {
+        return;
+    }
+
+    Packet_Fixed<0x3032> fixed_32;
+    fixed_32.guild_id = guild_invite;
+    fixed_32.account_id = id;
+    fixed_32.position = i;
+    fixed_32.name = name;
+    fixed_32.lv = lv;
+    send_fpacket<0x3032, 40>(char_session, fixed_32);
+}
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+void intif_guild_leave(GuildId guild_id, AccountId account_id, /*CharId char_id,*/ int flag, AString mes)
+{
+    if (!char_session)
+    {
+        return;
+    }
+
+    Packet_Fixed<0x3034> fixed_34;
+    fixed_34.guild_id = guild_id;
+    fixed_34.account_id = account_id;
+    fixed_34.char_id = CharId();
+    fixed_34.flag = flag;
+    fixed_34.mes = mes;
+    send_fpacket<0x3034, 55>(char_session, fixed_34);
+}
+/*========================================
+ *
+ *----------------------------------------
+ */
+void intif_guild_message(GuildId guild_id, AccountId account_id, AString mbuf)
+{
+    Packet_Head<0x3037> head_37;
+    head_37.guild_id = guild_id;
+    head_37.account_id = account_id;
+    send_vpacket<0x3037, 12, 1>(char_session, head_37, mbuf);
+
+
+    //Packet_Head<0x3027> head_27;
+    //head_27.party_id = party_id;
+    //head_27.account_id = account_id;
+    //send_vpacket<0x3027, 12, 1>(char_session, head_27, mes);
+
+}
+/*========================================
+ *  Parse guild create response from char server.
+ *----------------------------------------
+ */
+static
+void intif_parse_GuildCreated(Session *, const Packet_Fixed<0x3830>& fixed)
+{
+    if (battle_config.etc_log)
+        PRINTF("intif: guild created\n"_fmt);
+    AccountId account_id = fixed.account_id;
+    int fail = fixed.error;
+    GuildId guild_id = fixed.guild_id;
+    GuildName guild_name = fixed.guild_name;
+    guild_created(account_id, fail, guild_id, guild_name);
+}
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+static
+void intif_parse_GuildInfo(Session *, const Packet_Head<0x3831>& head, bool has_opt, const Packet_Option<0x3831>& option)
+{
+    GuildId gi = head.guild_id;
+    GuildMost gm = option.guild_most;
+    GuildPair gp = {gi, borrow(gm)};
+
+    if (has_opt)
+    {
+        guild_recv_info(gp);
+    }
+    else
+    {
+        //guild_recv_noinfo(gp);
+    }
+}
+
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+static
+void intif_parse_GuildMemberAdded(Session *, const Packet_Fixed<0x3832>& fixed)
+{
+    GuildId gi = fixed.guild_id;
+    AccountId ai = fixed.account_id;
+    int flag = fixed.flag;
+
+    guild_memberadded(gi, ai, flag);
+}
+
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+static
+void intif_parse_GuildMemberLeft(Session *, const Packet_Fixed<0x3834>& fixed)
+{
+    GuildId guild_id = fixed.guild_id;
+    AccountId account_id = fixed.account_id;
+    int flag = fixed.flag;
+    AString mes = fixed.mes;
+    CharName name = fixed.char_name;
+
+    guild_member_left(guild_id, account_id, flag, mes, name);
+}
+
+/*========================================
+ *
+ *----------------------------------------
+ */
+static
+void intif_parse_GuildMessage(Session *, const Packet_Head<0x3837>&head, AString& buf)
+{
+    guild_recv_message(head.guild_id, buf);
+}
 //-----------------------------------------------------------------
 // inter serverからの通信
 // エラーがあれば0(false)を返すこと
@@ -691,6 +857,60 @@ RecvResult intif_parse(Session *s, uint16_t packet_id)
                 return rv;
 
             intif_parse_PartyMessage(s, head, repeat);
+            break;
+        }
+        case 0x3830:
+        {
+            Packet_Fixed<0x3830> fixed;
+            rv = recv_fpacket<0x3830, 35>(s, fixed);
+            if (rv != RecvResult::Complete)
+                return rv;
+
+            intif_parse_GuildCreated(s, fixed);
+            break;
+        }
+        case 0x3831:
+        {
+             Packet_Head<0x3831> head;
+            bool has_opt;
+            Packet_Option<0x3831> option;
+
+            rv = recv_opacket<0x3831, 13, sizeof(NetPacket_Option<0x3831>)>(s, head, &has_opt, option);
+            if (rv != RecvResult::Complete)
+                return rv;
+
+            intif_parse_GuildInfo(s, head, has_opt, option);
+            break;
+        }
+        case 0x3832:
+        {
+            Packet_Fixed<0x3832> fixed;
+            rv = recv_fpacket<0x3832, 15>(s, fixed);
+            if (rv != RecvResult::Complete)
+                return rv;
+
+            intif_parse_GuildMemberAdded(s, fixed);
+            break;
+        }
+        case 0x3834:
+        {
+            Packet_Fixed<0x3834> fixed;
+            rv = recv_fpacket<0x3834, 79>(s, fixed);
+            if (rv != RecvResult::Complete)
+                return rv;
+
+            intif_parse_GuildMemberLeft(s, fixed);
+            break;
+        }
+        case 0x3837:
+        {
+            Packet_Head<0x3837> head;
+            AString repeat;
+            rv = recv_vpacket<0x3837, 12, 1>(s, head, repeat);
+            if (rv != RecvResult::Complete)
+                return rv;
+
+            intif_parse_GuildMessage(s, head, repeat);
             break;
         }
         default:
