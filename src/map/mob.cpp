@@ -804,10 +804,10 @@ int mob_attack(dumb_ptr<mob_data> md, tick_t tick)
 
     nullpo_retz(md);
 
-    if ((tbl = map_id2bl(md->target_id)) == nullptr)
+    if (!mob_check_attack(md))
         return 0;
 
-    if (!mob_check_attack(md))
+    if ((tbl = map_id2bl(md->target_id)) == nullptr)
         return 0;
 
     if (battle_config.monster_attack_direction_change)
@@ -1277,15 +1277,18 @@ int mob_stop_walking(dumb_ptr<mob_data> md, int type)
 static
 int mob_can_reach(dumb_ptr<mob_data> md, dumb_ptr<block_list> bl, int range)
 {
-    int dx, dy;
+    int dx, dy, rangex, rangey, arange;
     struct walkpath_data wpd;
     int i;
 
     nullpo_retz(md);
     nullpo_retz(bl);
 
-    dx = abs(bl->bl_x - md->bl_x);
-    dy = abs(bl->bl_y - md->bl_y);
+    dx = (bl->bl_x - md->bl_x);
+    dy = (bl->bl_y - md->bl_y);
+    rangex = abs(dx);
+    rangey = abs(dy);
+    arange = ((rangex > rangey) ? rangex : rangey);
 
     if (bl->bl_type == BL::PC && battle_config.monsters_ignore_gm == 1)
     {                           // option to have monsters ignore GMs [Valaris]
@@ -1297,7 +1300,7 @@ int mob_can_reach(dumb_ptr<mob_data> md, dumb_ptr<block_list> bl, int range)
     if (md->bl_m != bl->bl_m)      // 違うャbプ
         return 0;
 
-    if (range > 0 && range < ((dx > dy) ? dx : dy)) // 遠すぎる
+    if (range > 0 && range < arange) // 遠すぎる
         return 0;
 
     if (md->bl_x == bl->bl_x && md->bl_y == bl->bl_y) // 同じャX
@@ -1374,7 +1377,7 @@ int mob_target(dumb_ptr<mob_data> md, dumb_ptr<block_list> bl, int dist)
         {
             sd = bl->is_player();
             nullpo_retz(sd);
-            if (sd->invincible_timer || pc_isinvisible(sd))
+            if (pc_isdead(sd) || sd->invincible_timer || pc_isinvisible(sd))
                 return 0;
             if (!bool(mode & MobMode::BOSS) && race != Race::_insect && race != Race::_demon
                 && sd->state.gangsterparadise)
@@ -1800,7 +1803,7 @@ void mob_ai_sub_hard(dumb_ptr<block_list> bl, tick_t tick)
         dumb_ptr<map_session_data> asd = map_id2sd(md->attacked_id);
         if (asd)
         {
-            if (!asd->invincible_timer && !pc_isinvisible(asd))
+            if (!pc_isdead(asd) && !asd->invincible_timer && !pc_isinvisible(asd))
             {
                 map_foreachinarea(std::bind(mob_ai_sub_hard_linksearch, ph::_1, md, asd),
                         md->bl_m,
@@ -1823,7 +1826,7 @@ void mob_ai_sub_hard(dumb_ptr<block_list> bl, tick_t tick)
             if (abl->bl_type == BL::PC)
                 asd = abl->is_player();
             if (asd == nullptr || md->bl_m != abl->bl_m || abl->bl_prev == nullptr
-                || asd->invincible_timer || pc_isinvisible(asd)
+                || asd->invincible_timer || pc_isinvisible(asd) || pc_isdead(asd)
                 || (dist =
                     distance(md->bl_x, md->bl_y, abl->bl_x, abl->bl_y)) >= 32
                 || battle_check_target(bl, abl, BCT_ENEMY) == 0)
@@ -1842,6 +1845,18 @@ void mob_ai_sub_hard(dumb_ptr<block_list> bl, tick_t tick)
     }
 
     md->state.master_check = 0;
+    // Processing of summoned monster attacked by owner
+    if (md->last_master_id && md->state.special_mob_ai)
+    {
+        if (((bl = map_id2bl(md->last_master_id)) != nullptr && md->bl_m != bl->bl_m) || (bl = map_id2bl(md->last_master_id)) == nullptr)
+        {
+            md->last_master_id = BlockId();
+            md->state.special_mob_ai = 0;
+            md->mode = get_mob_db(md->mob_class).mode;
+            md->target_id = BlockId();
+            md->attacked_id = BlockId();
+        }
+    }
     // Processing of slave monster
     if (md->master_id && md->state.special_mob_ai == 0)
         mob_ai_sub_hard_slavemob(md, tick);
@@ -2355,6 +2370,7 @@ int mob_damage(dumb_ptr<block_list> src, dumb_ptr<mob_data> md, int damage,
         && bool(md->mode & MobMode::TURNS_AGAINST_BAD_MASTER))
     {
         /* If the master hits a monster, have the monster turn against him */
+        md->last_master_id = md->master_id;
         md->master_id = BlockId();
         md->mode = MobMode::war;        /* Regular war mode */
         md->target_id = src->bl_id;
@@ -2680,24 +2696,8 @@ int mob_damage(dumb_ptr<block_list> src, dumb_ptr<mob_data> md, int damage,
         if (sd == nullptr)
         {
             if (mvp_sd != nullptr)
-                sd = mvp_sd;
-            else
             {
-                for (io::FD i : iter_fds())
-                {
-                    Session *s = get_session(i);
-                    if (!s)
-                        continue;
-                    dumb_ptr<map_session_data> tmp_sd = dumb_ptr<map_session_data>(static_cast<map_session_data *>(s->session_data.get()));
-                    if (tmp_sd && tmp_sd->state.auth)
-                    {
-                        if (md->bl_m == tmp_sd->bl_m)
-                        {
-                            sd = tmp_sd;
-                            break;
-                        }
-                    }
-                }
+                sd = mvp_sd;
             }
         }
         if (sd)

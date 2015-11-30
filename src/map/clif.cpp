@@ -324,18 +324,28 @@ int clif_send(const Buffer& buf, dumb_ptr<block_list> bl, SendWho type, short mi
             break;
         case SendWho::AREA:
         case SendWho::AREA_WOS:
-            map_foreachinarea(std::bind(clif_send_sub, ph::_1, buf, bl, type, min_version),
-                    bl->bl_m,
-                    bl->bl_x - AREA_SIZE, bl->bl_y - AREA_SIZE,
-                    bl->bl_x + AREA_SIZE, bl->bl_y + AREA_SIZE,
-                    BL::PC);
+        {
+            if (bl->bl_m != borrow(undefined_gat))
+            {
+                map_foreachinarea(std::bind(clif_send_sub, ph::_1, buf, bl, type, min_version),
+                        bl->bl_m,
+                        bl->bl_x - AREA_SIZE, bl->bl_y - AREA_SIZE,
+                        bl->bl_x + AREA_SIZE, bl->bl_y + AREA_SIZE,
+                        BL::PC);
+            }
+        }
             break;
         case SendWho::AREA_CHAT_WOC:
-            map_foreachinarea(std::bind(clif_send_sub, ph::_1, buf, bl, SendWho::AREA_CHAT_WOC, min_version),
-                    bl->bl_m,
-                    bl->bl_x - (AREA_SIZE), bl->bl_y - (AREA_SIZE),
-                    bl->bl_x + (AREA_SIZE), bl->bl_y + (AREA_SIZE),
-                    BL::PC);
+        {
+            if (bl->bl_m != borrow(undefined_gat))
+            {
+                map_foreachinarea(std::bind(clif_send_sub, ph::_1, buf, bl, SendWho::AREA_CHAT_WOC, min_version),
+                        bl->bl_m,
+                        bl->bl_x - (AREA_SIZE), bl->bl_y - (AREA_SIZE),
+                        bl->bl_x + (AREA_SIZE), bl->bl_y + (AREA_SIZE),
+                        BL::PC);
+            }
+        }
             break;
 
         case SendWho::PARTY_AREA:       // 同じ画面内の全パーティーメンバに送信
@@ -857,7 +867,7 @@ void clif_mob007b(dumb_ptr<mob_data> md, Buffer& buf)
  *------------------------------------------
  */
 static
-int clif_0225_being_move3(dumb_ptr<mob_data> md)
+int clif_0225_being_move3(dumb_ptr<mob_data> md, Buffer& buf)
 {
     Packet_Head<0x0225> head_225;
     std::vector<Packet_Repeat<0x0225>> repeat_225;
@@ -874,10 +884,7 @@ int clif_0225_being_move3(dumb_ptr<mob_data> md)
         repeat_225.push_back(move_225);
     }
 
-    Buffer buf = create_vpacket<0x0225, 14, 1>(head_225, repeat_225);
-
-    clif_send(buf, md, SendWho::AREA, 3);
-
+    buf = create_vpacket<0x0225, 14, 1>(head_225, repeat_225);
     return 0;
 }
 /*==========================================
@@ -2436,14 +2443,38 @@ void clif_getareachar_npc(dumb_ptr<map_session_data> sd, dumb_ptr<npc_data> nd)
  * 移動停止
  *------------------------------------------
  */
+
+static
+void clif_movemob_sub(dumb_ptr<block_list> sd_bl, dumb_ptr<mob_data> md)
+{
+    nullpo_retv(sd_bl);
+    nullpo_retv(md);
+    dumb_ptr<map_session_data> sd = sd_bl->is_player();
+    Buffer buf;
+
+    if (sd->client_version < 3 || sd->client_version >= 4)
+        clif_mob007b(md, buf); // backward compatibility for old clients
+    else
+    {
+        Buffer buf2;
+        clif_mob0078(md, buf2);
+        clif_send(buf2, sd, SendWho::SELF, MIN_CLIENT_VERSION);
+
+        clif_0225_being_move3(md, buf);
+    }
+
+    clif_send(buf, sd, SendWho::SELF, MIN_CLIENT_VERSION);
+}
+
 int clif_movemob(dumb_ptr<mob_data> md)
 {
     nullpo_retz(md);
 
-    Buffer buf;
-    clif_mob007b(md, buf);
-    clif_send(buf, md, SendWho::AREA, MIN_CLIENT_VERSION);
-    clif_0225_being_move3(md);
+    map_foreachinarea(std::bind(clif_movemob_sub, ph::_1, md),
+            md->bl_m,
+            md->bl_x - AREA_SIZE, md->bl_y - AREA_SIZE,
+            md->bl_x + AREA_SIZE, md->bl_y + AREA_SIZE,
+            BL::PC);
 
     return 0;
 }
@@ -2458,9 +2489,7 @@ int clif_fixmobpos(dumb_ptr<mob_data> md)
 
     if (md->state.state == MS::WALK)
     {
-        Buffer buf;
-        clif_mob007b(md, buf);
-        clif_send(buf, md, SendWho::AREA, MIN_CLIENT_VERSION);
+        clif_movemob(md);
     }
     else
     {
@@ -2540,9 +2569,7 @@ void clif_getareachar_mob(dumb_ptr<map_session_data> sd, dumb_ptr<mob_data> md)
 
     if (md->state.state == MS::WALK)
     {
-        Buffer buf;
-        clif_mob007b(md, buf);
-        send_buffer(sd->sess, buf);
+        clif_movemob_sub(sd, md);
     }
     else
     {
